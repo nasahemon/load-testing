@@ -1,0 +1,212 @@
+version: '3.8'
+
+services:
+
+  #waf:
+  #image: container-registry.cellosco.pe/ai-ml/nginx:v1
+  #restart: always
+  #ports:
+  #- 443:443
+  #- 81:81
+  #environment:
+  #TZ: "GMT-06"
+  #volumes:
+  #- ./vision_pc/waf/nginx.conf:/etc/nginx/nginx.conf
+  #- /etc/letsencrypt/live/ai-ml.celloscope.net/fullchain.pem:/etc/nginx/fullchain.pem
+  #- /etc/letsencrypt/live/ai-ml.celloscope.net/privkey.pem:/etc/nginx/private.pem
+  #- ./vision_pc/waf/abl.conf:/etc/nginx/conf.d/abl.conf
+  #- ./vision_pc/waf/ib.conf:/etc/nginx/conf.d/ib.conf
+  #- ./vision_pc/waf/index.html:/usr/share/nginx/html/index.html
+  #- vision_nginx_log:/var/log/nginx
+  #networks:
+  #- expose_network
+  #- internal_network
+
+  gateway:
+    image: container-registry.cellosco.pe/ai-ml/api_gw:v5
+    restart: always
+    ports:
+      - 8070:8070
+    environment:
+      TZ: "GMT-06"
+    volumes:
+        - vision_api_gw_log:/var/log/ib/gateway-server
+    networks:
+      #- internal_network
+      - expose_network
+
+
+  database:
+    image: container-registry.cellosco.pe/ai-ml/database:v1
+    restart: always
+    ports:
+      - 5432:5432
+    volumes:
+      - vision_database:/var/lib/postgresql/data:rw
+    environment:
+       POSTGRES_USER: 'postgres'
+       POSTGRES_PASSWORD: 'postgres'
+       POSTGRES_DB: 'vision_db_prod'
+       TZ: "GMT-06"
+    networks:
+      #- internal_network
+      - expose_network
+
+
+  keycloak:
+    image: container-registry.cellosco.pe/ai-ml/keycloak:v1
+    restart: always
+    volumes:
+      - ./keycloak-realm-data/realm-export.json:/opt/jboss/keycloak/imports/realm-export.json
+    ports:
+      - 8080:8080
+    environment:
+      KEYCLOAK_IMPORT: /opt/jboss/keycloak/imports/realm-export.json -Dkeycloak.profile.feature.upload_scripts=enabled -Dkeycloak.migration.strategy=OVERWRITE_EXISTING
+      DB_VENDOR: POSTGRES
+      DB_ADDR: database
+      DB_DATABASE: vision_db_prod
+      DB_USER: postgres
+      DB_SCHEMA: public
+      DB_PASSWORD: postgres
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: admin
+      KEYCLOAK_FRONTEND_URL: http://keycloak:8080/auth
+      TZ: "GMT-06"
+    depends_on:
+      - database
+    networks:
+      #- internal_network
+      - expose_network
+
+  entrypoint:
+    image: container-registry.cellosco.pe/ai-ml/vision_entrypoint_spring:v2
+    restart: always
+    ports:
+      - 4111:4111
+    depends_on:
+      - database
+    volumes:
+      - vision_entrypoint:/mnt:rw
+    environment:
+      DB_URL: 'database:5432'
+      IMAGE_FOLDER: /mnt
+      FACE_SERVICE_URL: 'facematch:4102'
+      OCR_SERVICE_URL: 'ocr:4107'
+      VIDEO_LIVENESS_SERVICE_URL: 'liveness:4109'
+      TZ: "GMT-06"
+    networks:
+      #- internal_network
+      - expose_network
+
+
+  ocr:
+    image: container-registry.cellosco.pe/ai-ml/ocr:v11
+    restart: always
+    ports:
+      - 4107:4107
+    volumes:
+      - vision_entrypoint:/mnt:rw
+    environment:
+      PADDLE_URL: 'ocr:4107'
+      VISION_PRODUCTION_URL: 'entrypoint:4111'
+      TZ: "GMT-06"
+    networks:
+      #- internal_network
+      - expose_network
+
+
+  liveness:
+    image: container-registry.cellosco.pe/ai-ml/video_liveness:v2.1
+    restart: always
+    ports:
+      - 4109:4109
+    environment:
+      TZ: "GMT-06"
+    volumes:
+      - vision_entrypoint:/mnt:rw
+    networks:
+      #- internal_network
+      - expose_network
+
+
+  facematch:
+    image: container-registry.cellosco.pe/ai-ml/facematch:v5
+    restart: always
+    ports:
+      - 4102:4102
+    volumes:
+      - vision_entrypoint:/mnt:rw
+    environment:
+      TZ: "GMT-06"
+    networks:
+      #- internal_network
+      - expose_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'  # Limit to 1 vCPU
+          memory: '2G'  # Limit to 2GB of memory
+        reservations:
+          cpus: '1.0'  # Reserve 1 vCPU
+          memory: '2G'  # Reserve 2GB of memory
+
+  chatbot:
+    image: container-registry.cellosco.pe/ai-ml/agrani_chatbot_nlu_backend:prodv8
+    restart: always
+    depends_on:
+      - database
+    ports:
+      - 5005:5005
+    environment:
+      DB_URL: 'database'
+      VERSION: prod
+      TZ: "GMT -06"
+    volumes:
+      - ./vision_pc/chatbot/endpoints.yml:/chatbot/endpoints.yml
+      - ./vision_pc/chatbot/ib_client.py:/chatbot/actions/ib_client/ib_client.py
+    extra_hosts:
+      - "ib.agranibank.org.bd:192.168.190.27"
+    networks:
+      #- internal_network
+      - expose_network
+
+  speech2text:
+    image: container-registry.cellosco.pe/ai-ml/speech2text:v4
+    restart: always
+    volumes:
+      - vision_speech2text:/mnt:rw
+      - speech2text_audio:/audio:rw
+    ports:
+      - 8086:8086
+    extra_hosts:
+      - "ib.agranibank.org.bd:192.168.190.27"
+    environment:
+      TZ: "GMT-06"
+    networks:
+      #- internal_network
+      - expose_network
+
+volumes:
+  vision_database:
+  vision_entrypoint:
+  vision_nginx_log:
+  vision_api_gw_log:
+  vision_speech2text:
+  speech2text_audio:
+
+
+networks:
+  expose_network:
+    driver: bridge
+    internal: false
+    ipam:
+      driver: default
+      config:
+        - subnet: "20.20.20.0/24"
+  internal_network:
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: "10.10.10.0/24"
